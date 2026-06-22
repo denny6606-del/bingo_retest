@@ -2,6 +2,7 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 import pandas as pd
+import time  # 🎯 核心自動刷新必備工具箱
 
 # ==================== 1. 初始化 Firebase Firestore ====================
 try:
@@ -18,7 +19,7 @@ st.title("🎯 賓果 BINGO BINGO 智能演算法戰術艙")
 st.markdown("---")
 
 # ==================== 3. 從 Firestore 撈取最新數據 ====================
-@st.cache_data(ttl=10) # 每 10 秒自動刷新快取，防爆讀取量
+@st.cache_data(ttl=5) # 縮短緩存時間至 5 秒，讓最新開獎號碼更快同步
 def load_historical_data():
     # 撈取 bingo_history 裡的所有開獎紀錄，按時間戳降序排列
     docs = db.collection('bingo_history').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(30).stream()
@@ -51,7 +52,7 @@ else:
     
     st.markdown("### 🔮 最新開獎雷達觀測號碼")
     
-    # 【完美修正區】宣告 20 個橫向欄位骨架
+    # 宣告 20 個橫向欄位骨架
     ball_cols = st.columns(20)
     
     # 用 for 迴圈把 20 顆球依序塞進欄位裡，並使用正確的 unsafe_allow_html 參數
@@ -96,3 +97,8 @@ else:
         if current_time.hour in [21, 22, 23]:
             astrology_weight['亥時'] += 0.18  # 增加亥時水局磁場權重
         """, language='python')
+
+    # ==================== 6. 全自動秒級刷新引擎 ====================
+    # 網頁執行到最後，強制背景睡眠 10 秒，接著引爆自動 Rerun 重整網頁！
+    time.sleep(10)
+    st.rerun()
