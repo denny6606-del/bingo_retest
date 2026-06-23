@@ -4,23 +4,45 @@ from firebase_admin import credentials, firestore
 import json
 import pandas as pd
 from collections import Counter
+import os
 
-# ==================== 1. Firebase 初始化 ====================
-if not firebase_admin._apps:
+# ==================== 1. 【安全分流】Firebase 初始化 ====================
+def get_db_client():
+    # 徹底粉碎、清理舊有 app 註冊快取
+    if firebase_admin._apps:
+        for app_name in list(firebase_admin._apps.keys()):
+            try:
+                app = firebase_admin.get_app(app_name)
+                firebase_admin.delete_app(app)
+            except Exception:
+                pass
+
     try:
+        # 🎯 偵測當前環境：如果是在 Streamlit 雲端平台
         if "firebase_creds" in st.secrets:
             creds_dict = json.loads(st.secrets["firebase_creds"])
             cred = credentials.Certificate(creds_dict)
             firebase_admin.initialize_app(cred)
+            return firestore.client()
+            
+        # 🎯 如果是在本機電腦 (Localhost)
         else:
-            cred = credentials.Certificate('serviceAccountKey.json')
-            firebase_admin.initialize_app(cred)
+            json_file = 'serviceAccountKey.json'
+            if os.path.exists(json_file):
+                cred = credentials.Certificate(json_file)
+                firebase_admin.initialize_app(cred)
+                return firestore.client()
+            else:
+                st.error(f"❌ 本地端找不到金鑰檔案：請確認 {json_file} 是否存在於專案資料夾中。")
+                return None
     except Exception as e:
-        st.error(f"❌ Firebase 初始化失敗：{e}")
+        st.error(f"❌ Firebase 連線穿透失敗：{e}")
+        return None
 
-db = firestore.client()
+# 初始化全域資料庫連線
+db = get_db_client()
 
-# ==================== 2. Streamlit 介面配置 ====================
+# ==================== 2. Streamlit 介面與數據 ====================
 st.set_page_config(page_title="賓果大數據對撞艙", layout="wide")
 st.title("🎯 賓果 BINGO BINGO 智能演算法戰術艙")
 
@@ -28,8 +50,10 @@ if st.sidebar.button("🔄 立即刷新雲端開獎數據"):
     st.cache_data.clear()
     st.rerun()
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=10, show_spinner=False)
 def load_historical_data():
+    if db is None:
+        return []
     try:
         docs = db.collection('bingo_history').order_by('issue', direction=firestore.Query.DESCENDING).limit(100).stream()
         return [doc.to_dict() for doc in docs]
@@ -66,10 +90,9 @@ st.markdown("---")
 # ==================== 4. 戰術功能分頁 ===================
 tab1, tab2, tab3 = st.tabs(["🔥 雙線交錯打法 (升級)", "📊 開獎數據軌跡", "📊 數據效益分析"])
 
-# 核心交錯邏輯運算
 current_issue_int = int(current_issue_str)
 base_10 = (current_issue_int // 10) * 10
-age = current_issue_int % 10  # 當前這組球走到第幾期 (0-9)
+age = current_issue_int % 10  
 
 def generate_10_stars(target_base_issue):
     df_past = df[df['issue'].astype(int) <= target_base_issue]
@@ -155,7 +178,6 @@ with tab3:
         else:
             c_metric2.metric(label="⚡ 第二組伏擊狀態", value="潛伏中", delta="第8期準時解鎖", delta_color="inverse")
 
-    # 💡 重新補回歷史推薦球號對獎表格
     st.markdown("---")
     st.subheader("🔘 歷史推薦球號數據與自動兌獎看板")
     
@@ -167,7 +189,7 @@ with tab3:
         base = (iss // 10) * 10
         if base < base_10 and base not in checked_bases:
             checked_bases.append(base)
-            if len(checked_bases) >= 6:  # 展示過去 6 大週期的對獎成果
+            if len(checked_bases) >= 6:  
                 break
                 
     for paste_base in checked_bases:
@@ -175,9 +197,7 @@ with tab3:
         if not rec_10_stars:
             continue
             
-        # 抓出這個 10 期大週期的所有實際開獎號碼
         df_period = df[(df['issue'].astype(int) >= paste_base) & (df['issue'].astype(int) < paste_base + 10)]
-        
         period_hits = []
         for _, row in df_period.iterrows():
             actual_balls = row['numbers']
@@ -196,10 +216,7 @@ with tab3:
             
     if history_records:
         st.dataframe(pd.DataFrame(history_records), use_container_width=True)
-    else:
-        st.info("📊 雲端大數據正在動態生成歷史對獎報表，請稍候...")
 
-    # 勝率百分比區塊
     st.markdown("---")
     st.markdown("### 📈 本套演算法歷史實測精準勝率分布 (中五～中十趴數統計)")
     
@@ -223,8 +240,4 @@ with tab3:
         win_cols = st.columns(6)
         for idx, k in enumerate(sorted(hit_counts_distribution.keys())):
             percentage = (hit_counts_distribution[k] / total_games) * 100
-            win_cols[idx].metric(
-                label=f"🎯 中 {k} 顆勝率", 
-                value=f"{percentage:.1f} %", 
-                delta=f"共 {hit_counts_distribution[k]} 期"
-            )
+            win_cols[idx].metric(label=f"🎯 中 {k} 顆勝率", value=f"{percentage:.1f} %", delta=f"共 {hit_counts_distribution[k]} 期")
