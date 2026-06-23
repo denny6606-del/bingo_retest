@@ -6,14 +6,29 @@ import pandas as pd
 from collections import Counter
 import os
 
-# ==================== 1. 【安全防禦單例】Firebase 初始化 ====================
+# ==================== 1. 【極致防錯】Firebase 初始化 ====================
 def get_db_client():
     try:
         if not firebase_admin._apps:
+            # 優先偵測雲端 Secrets
             if "firebase_creds" in st.secrets:
-                creds_dict = json.loads(st.secrets["firebase_creds"])
+                creds_data = st.secrets["firebase_creds"]
+                
+                # 防錯機制：如果使用者貼進來的是純字串，在此嘗試解析
+                if isinstance(creds_data, str):
+                    try:
+                        creds_dict = json.loads(creds_data)
+                    except Exception as json_err:
+                        # 再次防線：如果因為換行字元報錯，進行字串清洗
+                        cleaned_data = creds_data.replace('\n', '\\n').replace('\r', '')
+                        creds_dict = json.loads(cleaned_data)
+                else:
+                    creds_dict = dict(creds_data)
+                    
                 cred = credentials.Certificate(creds_dict)
                 firebase_admin.initialize_app(cred)
+                
+            # 本地環境 (Localhost)
             else:
                 json_file = 'serviceAccountKey.json'
                 if os.path.exists(json_file):
@@ -22,9 +37,10 @@ def get_db_client():
                 else:
                     st.error(f"❌ 本地端找不到金鑰檔案：請確認 {json_file} 是否存在於專案資料夾中。")
                     return None
+                    
         return firestore.client()
     except Exception as e:
-        st.error(f"❌ Firebase 連線穿透失敗：{e}")
+        st.error(f"❌ Firebase 連線穿透失敗 (請檢查 Secrets 格式)：{e}")
         return None
 
 db = get_db_client()
@@ -49,18 +65,15 @@ def load_historical_data():
         docs = db.collection('bingo_history').order_by('issue', direction=firestore.Query.DESCENDING).limit(100).stream()
         raw_list = [doc.to_dict() for doc in docs]
         
-        # 🎯 【關鍵修復核心】在此進行數據型態大清洗，預防 ValueError
         cleaned_list = []
         for item in raw_list:
             if 'issue' in item and 'numbers' in item:
                 try:
-                    # 強制將期別轉為 int
                     item['issue'] = int(item['issue'])
-                    # 強制將 20 顆開獎球號全部清洗轉為純數字 int，防堵字串造成的比對崩潰
                     item['numbers'] = sorted([int(num) for num in item['numbers']])
                     cleaned_list.append(item)
                 except (ValueError, TypeError):
-                    continue # 略過毀損的單條數據
+                    continue
         return cleaned_list
     except Exception as e:
         st.error(f"讀取資料庫錯誤: {e}")
@@ -100,12 +113,10 @@ base_10 = (current_issue_int // 10) * 10
 age = current_issue_int % 10  
 
 def generate_10_stars(target_base_issue):
-    # 此處已確保 df['issue'] 與 target_base_issue 皆為純 int
     df_past = df[df['issue'] <= target_base_issue]
     if len(df_past) >= 24:
         past_balls = [n for sub in df_past.head(24)['numbers'] for n in sub]
         counts = Counter(past_balls)
-        # 🎯 取出最常出現的號碼時，強制轉回 int 確保型態統一
         return sorted([int(item[0]) for item in counts.most_common(10)])
     return []
 
