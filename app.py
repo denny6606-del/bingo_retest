@@ -6,35 +6,28 @@ import pandas as pd
 from collections import Counter
 import os
 
-# ==================== 1. 【安全分流】Firebase 初始化 ====================
+# ==================== 1. 【安全防禦單例】Firebase 初始化 ====================
 def get_db_client():
-    # 徹底粉碎、清理舊有 app 註冊快取
-    if firebase_admin._apps:
-        for app_name in list(firebase_admin._apps.keys()):
-            try:
-                app = firebase_admin.get_app(app_name)
-                firebase_admin.delete_app(app)
-            except Exception:
-                pass
-
     try:
-        # 🎯 偵測當前環境：如果是在 Streamlit 雲端平台
-        if "firebase_creds" in st.secrets:
-            creds_dict = json.loads(st.secrets["firebase_creds"])
-            cred = credentials.Certificate(creds_dict)
-            firebase_admin.initialize_app(cred)
-            return firestore.client()
-            
-        # 🎯 如果是在本機電腦 (Localhost)
-        else:
-            json_file = 'serviceAccountKey.json'
-            if os.path.exists(json_file):
-                cred = credentials.Certificate(json_file)
+        # 🎯 檢查是否已經存在 initialized 的 app，有就直接沿用，不重複建立
+        if not firebase_admin._apps:
+            # 偵測當前環境：如果是在 Streamlit 雲端平台
+            if "firebase_creds" in st.secrets:
+                creds_dict = json.loads(st.secrets["firebase_creds"])
+                cred = credentials.Certificate(creds_dict)
                 firebase_admin.initialize_app(cred)
-                return firestore.client()
+            # 如果是在本機電腦 (Localhost)
             else:
-                st.error(f"❌ 本地端找不到金鑰檔案：請確認 {json_file} 是否存在於專案資料夾中。")
-                return None
+                json_file = 'serviceAccountKey.json'
+                if os.path.exists(json_file):
+                    cred = credentials.Certificate(json_file)
+                    firebase_admin.initialize_app(cred)
+                else:
+                    st.error(f"❌ 本地端找不到金鑰檔案：請確認 {json_file} 是否存在於專案資料夾中。")
+                    return None
+        
+        # 確保回傳有效的 client
+        return firestore.client()
     except Exception as e:
         st.error(f"❌ Firebase 連線穿透失敗：{e}")
         return None
@@ -52,8 +45,13 @@ if st.sidebar.button("🔄 立即刷新雲端開獎數據"):
 
 @st.cache_data(ttl=10, show_spinner=False)
 def load_historical_data():
+    # 💡 雙重防禦：如果 db 意外失效，重新嘗試點火拿一次 client
+    global db
+    if db is None:
+        db = get_db_client()
     if db is None:
         return []
+        
     try:
         docs = db.collection('bingo_history').order_by('issue', direction=firestore.Query.DESCENDING).limit(100).stream()
         return [doc.to_dict() for doc in docs]
