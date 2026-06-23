@@ -9,14 +9,11 @@ import os
 # ==================== 1. 【安全防禦單例】Firebase 初始化 ====================
 def get_db_client():
     try:
-        # 🎯 檢查是否已經存在 initialized 的 app，有就直接沿用，不重複建立
         if not firebase_admin._apps:
-            # 偵測當前環境：如果是在 Streamlit 雲端平台
             if "firebase_creds" in st.secrets:
                 creds_dict = json.loads(st.secrets["firebase_creds"])
                 cred = credentials.Certificate(creds_dict)
                 firebase_admin.initialize_app(cred)
-            # 如果是在本機電腦 (Localhost)
             else:
                 json_file = 'serviceAccountKey.json'
                 if os.path.exists(json_file):
@@ -25,17 +22,14 @@ def get_db_client():
                 else:
                     st.error(f"❌ 本地端找不到金鑰檔案：請確認 {json_file} 是否存在於專案資料夾中。")
                     return None
-        
-        # 確保回傳有效的 client
         return firestore.client()
     except Exception as e:
         st.error(f"❌ Firebase 連線穿透失敗：{e}")
         return None
 
-# 初始化全域資料庫連線
 db = get_db_client()
 
-# ==================== 2. Streamlit 介面與數據 ====================
+# ==================== 2. Streamlit 介面與數據安全清洗 ====================
 st.set_page_config(page_title="賓果大數據對撞艙", layout="wide")
 st.title("🎯 賓果 BINGO BINGO 智能演算法戰術艙")
 
@@ -45,7 +39,6 @@ if st.sidebar.button("🔄 立即刷新雲端開獎數據"):
 
 @st.cache_data(ttl=10, show_spinner=False)
 def load_historical_data():
-    # 💡 雙重防禦：如果 db 意外失效，重新嘗試點火拿一次 client
     global db
     if db is None:
         db = get_db_client()
@@ -54,7 +47,21 @@ def load_historical_data():
         
     try:
         docs = db.collection('bingo_history').order_by('issue', direction=firestore.Query.DESCENDING).limit(100).stream()
-        return [doc.to_dict() for doc in docs]
+        raw_list = [doc.to_dict() for doc in docs]
+        
+        # 🎯 【關鍵修復核心】在此進行數據型態大清洗，預防 ValueError
+        cleaned_list = []
+        for item in raw_list:
+            if 'issue' in item and 'numbers' in item:
+                try:
+                    # 強制將期別轉為 int
+                    item['issue'] = int(item['issue'])
+                    # 強制將 20 顆開獎球號全部清洗轉為純數字 int，防堵字串造成的比對崩潰
+                    item['numbers'] = sorted([int(num) for num in item['numbers']])
+                    cleaned_list.append(item)
+                except (ValueError, TypeError):
+                    continue # 略過毀損的單條數據
+        return cleaned_list
     except Exception as e:
         st.error(f"讀取資料庫錯誤: {e}")
         return []
@@ -65,10 +72,11 @@ df = pd.DataFrame(data) if data else pd.DataFrame()
 # ==================== 3. 全域最新開獎數據看板 ====================
 if not df.empty:
     latest = data[0]
-    current_issue_str = str(latest.get('issue', '---'))
+    current_issue_int = latest.get('issue', 0)
+    current_issue_str = str(current_issue_int)
     st.markdown(f"### 📡 官方即時連線：最新第 **{current_issue_str}** 期開獎")
     
-    live_balls = sorted([int(b) for b in latest.get('numbers', [])])
+    live_balls = latest.get('numbers', [])
     cols = st.columns(20)
     for i, ball_num in enumerate(live_balls):
         if i < len(cols):
@@ -88,16 +96,17 @@ st.markdown("---")
 # ==================== 4. 戰術功能分頁 ===================
 tab1, tab2, tab3 = st.tabs(["🔥 雙線交錯打法 (升級)", "📊 開獎數據軌跡", "📊 數據效益分析"])
 
-current_issue_int = int(current_issue_str)
 base_10 = (current_issue_int // 10) * 10
 age = current_issue_int % 10  
 
 def generate_10_stars(target_base_issue):
-    df_past = df[df['issue'].astype(int) <= target_base_issue]
+    # 此處已確保 df['issue'] 與 target_base_issue 皆為純 int
+    df_past = df[df['issue'] <= target_base_issue]
     if len(df_past) >= 24:
         past_balls = [n for sub in df_past.head(24)['numbers'] for n in sub]
         counts = Counter(past_balls)
-        return sorted([item[0] for item in counts.most_common(10)])
+        # 🎯 取出最常出現的號碼時，強制轉回 int 確保型態統一
+        return sorted([int(item[0]) for item in counts.most_common(10)])
     return []
 
 current_10_stars = generate_10_stars(base_10)
@@ -180,7 +189,7 @@ with tab3:
     st.subheader("🔘 歷史推薦球號數據與自動兌獎看板")
     
     history_records = []
-    all_issues_sorted = sorted(df['issue'].astype(int).unique(), reverse=True)
+    all_issues_sorted = sorted(df['issue'].unique(), reverse=True)
     
     checked_bases = []
     for iss in all_issues_sorted:
@@ -195,7 +204,7 @@ with tab3:
         if not rec_10_stars:
             continue
             
-        df_period = df[(df['issue'].astype(int) >= paste_base) & (df['issue'].astype(int) < paste_base + 10)]
+        df_period = df[(df['issue'] >= paste_base) & (df['issue'] < paste_base + 10)]
         period_hits = []
         for _, row in df_period.iterrows():
             actual_balls = row['numbers']
@@ -221,8 +230,8 @@ with tab3:
     total_games = 0
     hit_counts_distribution = {5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0}
     
-    for i in range(len(df) - 24):
-        test_issue = int(df.iloc[i]['issue'])
+    for i in range(len(df)):
+        test_issue = df.iloc[i]['issue']
         actual_balls = df.iloc[i]['numbers']
         t_base = (test_issue // 10) * 10
         sim_10_stars = generate_10_stars(t_base)
